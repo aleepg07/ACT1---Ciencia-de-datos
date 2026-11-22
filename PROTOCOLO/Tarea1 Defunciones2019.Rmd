@@ -1,0 +1,674 @@
+---
+title: "DEFUNCIONES NO FETALES EN COLOMBIA 2019"
+author: "Paula Ayala - Luis Hernández - Jhon Panqueva"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(dplyr)
+options(scipen = 999)
+```
+
+# 1. Introducción
+
+Las Estadísticas Vitales del DANE guardan la información de los certificados de defunción de Colombia: sexo y edad de la persona que murió, lugar y mes de la defunción y la probable manera de muerte (enfermedad, homicidio, accidente, etc.).
+
+## Planteamiento del problema
+
+No todas las personas mueren igual ni en los mismos lugares. Las muertes por enfermedad pasan sobre todo en edades avanzadas, mientras que los homicidios y los accidentes afectan a gente más joven y se concentran en algunas ciudades. Si no se describen estos patrones, es difícil saber qué grupos y qué territorios tienen más defunciones.
+
+**Pregunta:** ¿Cómo fueron las defunciones no fetales en Colombia en 2019 según la edad, el sexo y la manera de muerte, y qué departamentos y municipios tuvieron más defunciones?
+
+## Objetivo general
+
+Describir con análisis exploratorio de datos las defunciones no fetales de Colombia en 2019 según edad, sexo, manera de muerte y lugar de ocurrencia.
+
+## Objetivos específicos
+
+1. Limpiar la base de datos (datos perdidos, códigos de "sin información" y datos duplicados).
+2. Calcular las medidas descriptivas de la edad al fallecer y graficarla (histograma y boxplot).
+3. Ver cómo se distribuyen las defunciones según manera de muerte, sexo y mes.
+4. Encontrar los 10 departamentos y los 10 municipios con más defunciones, y los 10 municipios con más homicidios.
+
+# 2. Descripción de los datos
+
+Los datos son de la plataforma Microdatos del DANE: **Estadísticas Vitales 2019, archivo `nofetal2019`** (defunciones no fetales).
+
+Enlace: <https://microdatos.dane.gov.co/index.php/catalog/696>
+
+Cada fila es una defunción. El archivo tiene 56 variables, pero para este trabajo usamos solo 6. En la tabla están con el ID y la etiqueta que aparecen en el diccionario de datos (PDF):
+
+```{r}
+variables <- data.frame(
+  ID_PDF = c("V1338", "V1339", "V1345", "V1348", "V1350", "V1363"),
+  Variable = c("COD_DPTO", "COD_MUNIC", "MES", "SEXO", "GRU_ED1", "P_PMAN_IRIS"),
+  Etiqueta_PDF = c("Departamento donde ocurrió la defunción",
+                   "Municipio donde ocurrió la defunción",
+                   "Mes en que ocurrió la defunción",
+                   "Sexo del fallecido",
+                   "Agrupación de edades, según la edad del fallecido",
+                   "Probable manera de muerte"),
+  Tipo = c("Código departamento", "Código municipio", "Cuantitativa discreta",
+           "Cualitativa", "CUANTITATIVA (edad agrupada)", "CUALITATIVA"),
+  Uso = c("Top 10 departamentos", "Top 10 municipios", "Defunciones por mes",
+          "Cruce con otras variables", "Variable cuantitativa", "Variable cualitativa")
+)
+variables
+```
+
+También usamos `TIPO_DEFUN` (V1343) y `ANO` (V1344) solo para revisar que todo sea defunción no fetal de 2019.
+
+# 3. Carga de los datos
+
+```{r}
+# Busco la carpeta donde están los datos
+ruta <- c("D:\\ESPECIALIZACIÓN\\ACT1 - Ciencia de datos\\ACT1 - Ciencia de datos\\ACT1 - Ciencia de datos\\DATOS")
+ruta <- ruta[dir.exists(ruta)][1]
+list.files(ruta) # Visualizo archivos de la carpeta
+```
+
+En esta línea cargamos la matriz de datos. Se lee todo como texto para no perder los ceros de los códigos (por ejemplo "001").
+
+```{r}
+data <- read.csv(file.path(ruta, "nofetal2019.csv"), colClasses = "character",
+                 fileEncoding = "latin1")
+```
+
+## Exploración de los datos
+
+```{r}
+dim(data)
+```
+
+```{r}
+colnames(data)
+```
+
+```{r}
+head(data[, 1:12])
+```
+
+Revisamos que todo sea defunción no fetal (TIPO_DEFUN = 2) del año 2019:
+
+```{r}
+table(data$TIPO_DEFUN)
+table(data$ANO)
+```
+
+# 4. Selección de variables
+
+```{r}
+vars <- c("COD_DPTO", "COD_MUNIC", "MES", "SEXO", "GRU_ED1", "P_PMAN_IRIS")
+data_sel <- data[, vars]
+
+# Pasamos los códigos a número
+data_sel[] <- lapply(data_sel, as.integer)
+str(data_sel)
+```
+
+Con el código del departamento y el del municipio armamos el código del municipio de 5 números.
+
+```{r}
+data_sel$COD_MPIO <- data_sel$COD_DPTO * 1000 + data_sel$COD_MUNIC
+head(data_sel)
+```
+
+## Categorías según el PDF
+
+Antes de limpiar miramos cuántos registros hay en cada código del diccionario.
+
+**SEXO:** 1 = Masculino, 2 = Femenino, 3 = Indeterminado
+
+```{r}
+table(data_sel$SEXO)
+```
+
+**P_PMAN_IRIS:** 0 = Natural (enfermedad), 1 = Homicidio, 2 = Accidente, 3 = Pendiente de investigación, 4 = Suicidio, 5 = No se pudo determinar, 6 = Desconocido, 8 = Intervención legal, 9 = Guerra
+
+```{r}
+table(data_sel$P_PMAN_IRIS)
+```
+
+**GRU_ED1:** 00 = Menor de una hora, 01 = Menor de un día, 02 = De 1 a 6 días, 03 = De 7 a 27 días, 04 = De 28 a 29 días, 05 = De 1 a 5 meses, 06 = De 6 a 11 meses, 07 = De 1 año, 08 = De 2 a 4 años, 09 = De 5 a 9 años, 10 = De 10 a 14 años, ..., 27 = De 95 a 99 años, 28 = De 100 años y más, 29 = Edad desconocida
+
+```{r}
+table(data_sel$GRU_ED1)
+```
+
+**MES:** 01 = Enero, ..., 12 = Diciembre
+
+```{r}
+table(data_sel$MES)
+```
+
+# 5. Limpieza de datos
+
+## Valores faltantes
+
+```{r}
+# Número total de datos perdidos
+total_na <- sum(is.na(data_sel))
+print(paste("Total de datos perdidos:", total_na))
+```
+
+```{r}
+# Número de datos perdidos por columna
+na_por_columna <- colSums(is.na(data_sel))
+
+tabla_na <- data.frame(
+  Columna = names(na_por_columna),
+  Datos_Perdidos = na_por_columna
+)
+
+tabla_na_ordenada <- tabla_na %>%
+  arrange(desc(Datos_Perdidos)) %>%
+  rbind(data.frame(Columna = "Total", Datos_Perdidos = total_na))
+tabla_na_ordenada
+```
+
+No hay datos perdidos como `NA`, pero en las bases del DANE los datos desconocidos vienen con un código especial. Según el PDF:
+
+- GRU_ED1 = 29 es "Edad desconocida"
+- P_PMAN_IRIS = 6 es "Desconocido (no completado)"
+
+```{r}
+sum(data_sel$GRU_ED1 == 29)
+sum(data_sel$P_PMAN_IRIS == 6)
+```
+
+Esos códigos los convertimos en `NA`, porque si no R los tomaría como edades o maneras de muerte reales. SEXO = 3 (Indeterminado) sí se deja porque es una categoría válida.
+
+```{r}
+data_sel$GRU_ED1[data_sel$GRU_ED1 == 29] <- NA
+data_sel$P_PMAN_IRIS[data_sel$P_PMAN_IRIS == 6] <- NA
+
+colSums(is.na(data_sel))
+```
+
+## TOTAL DATOS DUPLICADOS
+
+Esta base no tiene un número que identifique cada defunción. Por eso los duplicados se buscan en **todas las columnas originales** (las 56) y no solo en las 6 que escogimos.
+
+```{r}
+sum(duplicated(data))
+```
+
+Identificamos los datos duplicados:
+
+```{r}
+data[duplicated(data), 1:12]
+```
+
+Si buscáramos duplicados solo con nuestras 6 variables saldrían muchísimas filas:
+
+```{r}
+sum(duplicated(data_sel[, vars]))
+```
+
+Esas filas **no** son datos repetidos: son personas distintas que coinciden en departamento, municipio, mes, sexo, edad y manera de muerte. Si las borramos, estaríamos eliminando defunciones reales. Por eso solo eliminamos las 18 filas que son iguales en todas las columnas.
+
+Eliminamos datos duplicados:
+
+```{r}
+data_sin <- data_sel[!duplicated(data), ]
+dim(data_sin)
+```
+
+## COMO SE ELIMINAN DATOS PERDIDOS
+
+Los datos perdidos son muy pocos y no tiene sentido imputar la edad o la manera de muerte de alguien que murió (sería inventar el dato). Entonces los eliminamos con `na.omit()`.
+
+```{r}
+data_limpia <- na.omit(data_sin)
+dim(data_limpia)
+```
+
+```{r}
+print(paste("Filas eliminadas por datos perdidos:", nrow(data_sin) - nrow(data_limpia)))
+```
+
+## PONER NOMBRES A LOS CÓDIGOS
+
+Cambiamos los códigos por las etiquetas del PDF.
+
+```{r}
+# Sexo
+data_limpia$Sexo <- factor(data_limpia$SEXO, levels = c(1, 2, 3),
+                           labels = c("Masculino", "Femenino", "Indeterminado"))
+
+# Manera de muerte
+data_limpia$Manera_Muerte <- factor(data_limpia$P_PMAN_IRIS,
+  levels = c(0, 1, 2, 3, 4, 5, 8, 9),
+  labels = c("Natural (enfermedad)", "Homicidio", "Accidente",
+             "Pendiente de investigacion", "Suicidio", "No se pudo determinar",
+             "Intervencion legal", "Guerra"))
+
+# Mes
+data_limpia$Mes <- factor(data_limpia$MES, levels = 1:12,
+  labels = c("Ene", "Feb", "Mar", "Abr", "May", "Jun",
+             "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"))
+
+# Departamento
+departamentos <- c("5" = "Antioquia", "8" = "Atlantico", "11" = "Bogota D.C.",
+  "13" = "Bolivar", "15" = "Boyaca", "17" = "Caldas", "18" = "Caqueta",
+  "19" = "Cauca", "20" = "Cesar", "23" = "Cordoba", "25" = "Cundinamarca",
+  "27" = "Choco", "41" = "Huila", "44" = "La Guajira", "47" = "Magdalena",
+  "50" = "Meta", "52" = "Narino", "54" = "Norte de Santander", "63" = "Quindio",
+  "66" = "Risaralda", "68" = "Santander", "70" = "Sucre", "73" = "Tolima",
+  "76" = "Valle del Cauca", "81" = "Arauca", "85" = "Casanare", "86" = "Putumayo",
+  "88" = "San Andres y Providencia", "91" = "Amazonas", "94" = "Guainia",
+  "95" = "Guaviare", "97" = "Vaupes", "99" = "Vichada")
+data_limpia$Departamento <- unname(departamentos[as.character(data_limpia$COD_DPTO)])
+
+# Municipio (la base solo trae el código, así que le ponemos nombre a las ciudades principales)
+municipios <- c("5001" = "Medellin", "5088" = "Bello", "5360" = "Itagui",
+  "8001" = "Barranquilla", "8758" = "Soledad", "11001" = "Bogota D.C.",
+  "13001" = "Cartagena", "15001" = "Tunja", "17001" = "Manizales",
+  "20001" = "Valledupar", "23001" = "Monteria", "25754" = "Soacha",
+  "41001" = "Neiva", "47001" = "Santa Marta", "50001" = "Villavicencio",
+  "52001" = "Pasto", "52835" = "Tumaco", "54001" = "Cucuta", "63001" = "Armenia",
+  "66001" = "Pereira", "68001" = "Bucaramanga", "68276" = "Floridablanca",
+  "70001" = "Sincelejo", "73001" = "Ibague", "76001" = "Cali",
+  "76109" = "Buenaventura", "76520" = "Palmira", "76834" = "Tulua")
+data_limpia$Municipio <- unname(municipios[as.character(data_limpia$COD_MPIO)])
+data_limpia$Municipio <- ifelse(is.na(data_limpia$Municipio),
+                                paste("Mpio", sprintf("%05d", data_limpia$COD_MPIO)),
+                                data_limpia$Municipio)
+head(data_limpia)
+```
+
+## EDAD APROXIMADA
+
+La edad viene en grupos (GRU_ED1) y no en años exactos. Para poder sacar la media, la mediana, etc., cambiamos cada grupo por su **punto medio**. Por ejemplo, "De 15 a 19 años" (código 11) pasa a ser 17,5. Los menores de un año (códigos 0 a 6) quedan en 0,5 y "100 años y más" (código 28) en 100.
+
+```{r}
+# Punto medio de cada grupo, de GRU_ED1 = 0 hasta GRU_ED1 = 28
+puntos_medios <- c(rep(0.5, 7), 1.5, 3.5, seq(7.5, 97.5, by = 5), 100)
+
+# Se suma 1 porque el código 0 está en la primera posición del vector
+data_limpia$Edad <- puntos_medios[data_limpia$GRU_ED1 + 1]
+
+# Revisión: código y su edad aproximada
+unique(data_limpia[order(data_limpia$GRU_ED1), c("GRU_ED1", "Edad")])
+```
+
+Ojo: la edad es aproximada porque el dato original está agrupado.
+
+# 6. Análisis exploratorio de datos
+
+## ANÁLISIS DE VARIABLES CUALITATIVAS
+
+### Manera de muerte
+
+```{r}
+tabla_manera <- data.frame(sort(table(data_limpia$Manera_Muerte), decreasing = TRUE))
+colnames(tabla_manera) <- c("Manera_Muerte", "Frecuencia")
+tabla_manera <- tabla_manera[tabla_manera$Frecuencia > 0, ]
+tabla_manera$Porcentaje <- round(100 * tabla_manera$Frecuencia / sum(tabla_manera$Frecuencia), 2)
+tabla_manera
+```
+
+De un total de `r format(nrow(data_limpia), big.mark = ".", decimal.mark = ",")` defunciones analizadas (*n* = `r nrow(data_limpia)`), la manera de muerte que más se repite es **`r as.character(tabla_manera$Manera_Muerte[1])`**, con `r format(tabla_manera$Frecuencia[1], big.mark = ".", decimal.mark = ",")` casos (`r tabla_manera$Porcentaje[1]`%). En segundo lugar está **`r as.character(tabla_manera$Manera_Muerte[2])`** con `r tabla_manera$Porcentaje[2]`% y en tercer lugar **`r as.character(tabla_manera$Manera_Muerte[3])`** con `r tabla_manera$Porcentaje[3]`%.
+
+```{r}
+par(mar = c(5, 12, 4, 2))
+barplot(rev(tabla_manera$Frecuencia),
+        names.arg = rev(tabla_manera$Manera_Muerte),
+        horiz = TRUE, las = 1,
+        col = "skyblue", border = "darkblue",
+        main = "Defunciones según manera de muerte",
+        xlab = "Número de defunciones")
+```
+
+### Sexo
+
+```{r}
+tabla_sexo <- data.frame(sort(table(data_limpia$Sexo), decreasing = TRUE))
+colnames(tabla_sexo) <- c("Sexo", "Frecuencia")
+tabla_sexo$Porcentaje <- round(100 * tabla_sexo$Frecuencia / sum(tabla_sexo$Frecuencia), 2)
+tabla_sexo
+```
+
+El grupo **`r as.character(tabla_sexo$Sexo[1])`** es el más grande, con `r format(tabla_sexo$Frecuencia[1], big.mark = ".", decimal.mark = ",")` casos (`r tabla_sexo$Porcentaje[1]`%). El grupo **`r as.character(tabla_sexo$Sexo[2])`** tiene `r format(tabla_sexo$Frecuencia[2], big.mark = ".", decimal.mark = ",")` casos (`r tabla_sexo$Porcentaje[2]`%). La categoría Indeterminado tiene muy pocos casos.
+
+```{r}
+barplot(table(data_limpia$Sexo),
+        col = c("skyblue", "pink", "gray"),
+        border = "darkblue",
+        main = "Defunciones según sexo",
+        ylab = "Número de defunciones")
+```
+
+### Mes
+
+```{r}
+tabla_mes <- table(data_limpia$Mes)
+tabla_mes
+```
+
+```{r}
+barplot(tabla_mes,
+        col = "skyblue", border = "darkblue",
+        main = "Defunciones por mes 2019",
+        xlab = "Mes", ylab = "Número de defunciones")
+```
+
+### Manera de muerte según sexo
+
+```{r}
+tabla_cruce <- table(data_limpia$Manera_Muerte, data_limpia$Sexo)
+tabla_cruce <- tabla_cruce[rowSums(tabla_cruce) > 0, c("Masculino", "Femenino")]
+tabla_cruce
+```
+
+```{r}
+# Porcentaje dentro de cada sexo
+round(100 * prop.table(tabla_cruce, margin = 2), 2)
+```
+
+## ANÁLISIS DE LA VARIABLE CUANTITATIVA: EDAD
+
+```{r}
+summary(data_limpia$Edad)
+```
+
+```{r}
+# Función para calcular la moda
+moda <- function(x) {
+  tabla <- table(x)
+  as.numeric(names(tabla)[which.max(tabla)])
+}
+
+# Calcular estadísticos
+estadisticos <- data.frame(
+  Estadístico = c("Media", "Mediana", "Moda", "Desviación Estándar", "Mínimo", "Máximo",
+                  "Q1 (25%)", "Q2 (50%)", "Q3 (75%)"),
+  Valor = c(
+    mean(data_limpia$Edad),
+    median(data_limpia$Edad),
+    moda(data_limpia$Edad),
+    sd(data_limpia$Edad),
+    min(data_limpia$Edad),
+    max(data_limpia$Edad),
+    quantile(data_limpia$Edad, probs = 0.25),
+    quantile(data_limpia$Edad, probs = 0.50),
+    quantile(data_limpia$Edad, probs = 0.75)
+  )
+)
+estadisticos$Valor <- round(estadisticos$Valor, 2)
+rownames(estadisticos) <- NULL
+estadisticos
+```
+
+La edad promedio al fallecer es de `r round(mean(data_limpia$Edad), 1)` años, la mediana es de `r median(data_limpia$Edad)` años y la moda es de `r moda(data_limpia$Edad)` años. Como la media es `r ifelse(mean(data_limpia$Edad) < median(data_limpia$Edad), "menor", "mayor o igual")` que la mediana, hay `r ifelse(mean(data_limpia$Edad) < median(data_limpia$Edad), "una cola hacia las edades jóvenes (las muertes de bebés, niños y jóvenes bajan el promedio)", "poca cola hacia las edades jóvenes")`.
+
+```{r}
+hist(data_limpia$Edad,
+     breaks = seq(0, 105, by = 5),
+     col = "skyblue",
+     border = "darkblue",
+     main = "Histograma de la edad al fallecer",
+     xlab = "Edad (años)",
+     ylab = "Número de defunciones")
+```
+
+```{r}
+boxplot(
+  data_limpia$Edad,
+  horizontal = TRUE,
+  col = "skyblue",
+  border = "darkblue",
+  main = "Cajas y Bigotes de la Edad",
+  xlab = "Edad (años)")
+```
+
+### Edad según sexo
+
+```{r}
+boxplot(Edad ~ Sexo,
+        data = droplevels(data_limpia[data_limpia$Sexo != "Indeterminado", ]),
+        col = c("skyblue", "pink"),
+        border = "darkblue",
+        main = "Edad al fallecer según sexo",
+        xlab = "Sexo", ylab = "Edad (años)")
+```
+
+```{r}
+tapply(data_limpia$Edad, data_limpia$Sexo, median)
+```
+
+### Edad según manera de muerte
+
+```{r}
+tapply(data_limpia$Edad, droplevels(data_limpia$Manera_Muerte), median)
+```
+
+## IDENTIFICACIÓN DE VALORES ATÍPICOS
+
+Usamos el método del IQR: es atípico lo que esté por debajo de Q1 - 1.5 × IQR o por encima de Q3 + 1.5 × IQR.
+
+```{r}
+# Calcular cuartiles
+Q1 <- quantile(data_limpia$Edad, 0.25)
+Q3 <- quantile(data_limpia$Edad, 0.75)
+
+# Calcular rango intercuartílico
+IQR_valor <- IQR(data_limpia$Edad)
+
+# Definir límites
+limite_inferior <- Q1 - 1.5 * IQR_valor
+limite_superior <- Q3 + 1.5 * IQR_valor
+limite_inferior
+limite_superior
+```
+
+```{r}
+# Mostrar valores atípicos
+atipicos <- data_limpia[data_limpia$Edad < limite_inferior | data_limpia$Edad > limite_superior, ]
+nrow(atipicos)
+table(atipicos$Edad)
+```
+
+Los atípicos son muertes de bebés, niños y jóvenes (por debajo del límite inferior). **No los eliminamos** porque no son errores: son defunciones reales y quitarlas dañaría el análisis. Además todas las edades están entre 0 y 100 años, o sea que no hay valores imposibles.
+
+## TOP 10 DEPARTAMENTOS Y MUNICIPIOS
+
+Usamos como métrica el **número de defunciones** según el lugar donde ocurrieron.
+
+### Top 10 departamentos con más defunciones
+
+```{r}
+top_dptos <- data.frame(sort(table(data_limpia$Departamento), decreasing = TRUE))
+colnames(top_dptos) <- c("Departamento", "Defunciones")
+top_dptos$Porcentaje <- round(100 * top_dptos$Defunciones / nrow(data_limpia), 2)
+top_dptos <- head(top_dptos, 10)
+top_dptos
+```
+
+```{r}
+par(mar = c(5, 11, 4, 2))
+barplot(rev(top_dptos$Defunciones),
+        names.arg = rev(top_dptos$Departamento),
+        horiz = TRUE, las = 1,
+        col = "skyblue", border = "darkblue",
+        main = "Top 10 departamentos con más defunciones",
+        xlab = "Número de defunciones")
+```
+
+### Top 10 municipios con más defunciones
+
+```{r}
+top_mpios <- data.frame(sort(table(data_limpia$Municipio), decreasing = TRUE))
+colnames(top_mpios) <- c("Municipio", "Defunciones")
+top_mpios$Porcentaje <- round(100 * top_mpios$Defunciones / nrow(data_limpia), 2)
+top_mpios <- head(top_mpios, 10)
+top_mpios
+```
+
+```{r}
+par(mar = c(5, 11, 4, 2))
+barplot(rev(top_mpios$Defunciones),
+        names.arg = rev(top_mpios$Municipio),
+        horiz = TRUE, las = 1,
+        col = "skyblue", border = "darkblue",
+        main = "Top 10 municipios con más defunciones",
+        xlab = "Número de defunciones")
+```
+
+### Top 10 municipios con más homicidios
+
+```{r}
+homicidios <- data_limpia[data_limpia$Manera_Muerte == "Homicidio", ]
+
+top_homicidios <- data.frame(sort(table(homicidios$Municipio), decreasing = TRUE))
+colnames(top_homicidios) <- c("Municipio", "Homicidios")
+top_homicidios <- head(top_homicidios, 10)
+top_homicidios
+```
+
+```{r}
+par(mar = c(5, 11, 4, 2))
+barplot(rev(top_homicidios$Homicidios),
+        names.arg = rev(top_homicidios$Municipio),
+        horiz = TRUE, las = 1,
+        col = "skyblue", border = "darkblue",
+        main = "Top 10 municipios con más homicidios",
+        xlab = "Número de homicidios")
+```
+
+## MAPA COROPLÉTICO — DEFUNCIONES POR DEPARTAMENTO
+
+El siguiente mapa muestra la distribución geográfica de las defunciones en Colombia. Los departamentos más oscuros concentran el mayor número de casos. 
+
+```{r mapa-colombia, fig.width=8, fig.height=9, fig.cap="Mapa coroplético de defunciones no fetales por departamento. Colombia 2019. Fuente: DANE."}
+
+# ── Verificar que data_limpia existe (solo aplica si se corre el chunk solo) ──
+if (!exists("data_limpia")) {
+  stop("Ejecuta primero los chunks de las secciones 3-5 para crear 'data_limpia', o usa Knit para compilar el documento completo.")
+}
+
+# ── Instalar paquetes si no están disponibles ──────────────────────────────
+paquetes <- c("sf", "ggplot2", "RColorBrewer")
+nuevos   <- paquetes[!sapply(paquetes, requireNamespace, quietly = TRUE)]
+if (length(nuevos) > 0) install.packages(nuevos, repos = "https://cloud.r-project.org")
+
+library(sf)
+library(ggplot2)
+library(RColorBrewer)
+
+# ── Tabla de defunciones por departamento (calculada del dataset limpio) ───
+def_por_dpto <- data_limpia %>%
+  filter(!is.na(Departamento)) %>%
+  group_by(Departamento) %>%
+  summarise(Defunciones = n(), .groups = "drop")
+
+# ── Geometría de Colombia: GeoJSON de GADM (sin paquetes extra) ────────────
+# El archivo se descarga una sola vez y se guarda junto al .Rmd para
+# no depender de internet en compilaciones futuras.
+geojson_local <- file.path(dirname(knitr::current_input(dir = TRUE)),
+                            "colombia_dptos.geojson")
+
+if (!file.exists(geojson_local)) {
+  url_gadm <- paste0(
+    "https://geodata.ucdavis.edu/gadm/gadm4.1/json/",
+    "gadm41_COL_1.json"
+  )
+  tryCatch(
+    download.file(url_gadm, geojson_local, mode = "wb", quiet = TRUE),
+    error = function(e) stop(
+      "No se pudo descargar el GeoJSON de Colombia.\n",
+      "Descárgalo manualmente desde:\n",
+      "  https://geodata.ucdavis.edu/gadm/gadm4.1/json/gadm41_COL_1.json\n",
+      "y guárdalo como 'colombia_dptos.geojson' en la misma carpeta que el .Rmd."
+    )
+  )
+}
+
+col_sf <- st_read(geojson_local, quiet = TRUE)
+
+# ── Tabla de equivalencias: nombre GADM → nombre usado en el análisis ──────
+equiv <- data.frame(
+  name_gadm = c("Amazonas", "Antioquia", "Arauca", "Atlántico", "Bolívar",
+                 "Boyacá", "Caldas", "Caquetá", "Casanare", "Cauca", "Cesar",
+                 "Chocó", "Córdoba", "Cundinamarca", "Guainía", "Guaviare",
+                 "Huila", "La Guajira", "Magdalena", "Meta", "Nariño",
+                 "Norte De Santander", "Putumayo", "Quindío", "Risaralda",
+                 "San Andrés Y Providencia", "Santander", "Sucre", "Tolima",
+                 "Valle Del Cauca", "Vaupés", "Vichada", "Bogotá D.C."),
+  Departamento = c("Amazonas", "Antioquia", "Arauca", "Atlantico", "Bolivar",
+                   "Boyaca", "Caldas", "Caqueta", "Casanare", "Cauca", "Cesar",
+                   "Choco", "Cordoba", "Cundinamarca", "Guainia", "Guaviare",
+                   "Huila", "La Guajira", "Magdalena", "Meta", "Narino",
+                   "Norte de Santander", "Putumayo", "Quindio", "Risaralda",
+                   "San Andres y Providencia", "Santander", "Sucre", "Tolima",
+                   "Valle del Cauca", "Vaupes", "Vichada", "Bogota D.C."),
+  stringsAsFactors = FALSE
+)
+
+# El campo de nombre en GADM 4.1 es NAME_1
+col_sf <- merge(col_sf, equiv,      by.x = "NAME_1",      by.y = "name_gadm",    all.x = TRUE)
+col_sf <- merge(col_sf, def_por_dpto, by = "Departamento", all.x = TRUE)
+
+# ── Graficar ────────────────────────────────────────────────────────────────
+ggplot(col_sf) +
+  geom_sf(aes(fill = Defunciones), color = "white", linewidth = 0.3) +
+  scale_fill_gradientn(
+    colours  = brewer.pal(9, "YlOrRd"),
+    na.value = "grey85",
+    name     = "Defunciones",
+    labels   = scales::comma
+  ) +
+  geom_sf_text(
+    data = col_sf %>%
+      filter(!is.na(Defunciones)) %>%
+      slice_max(Defunciones, n = 5),
+    aes(label = Departamento),
+    size = 2.5, color = "white", fontface = "bold",
+    check_overlap = TRUE
+  ) +
+  labs(
+    title    = "Defunciones no fetales por departamento",
+    subtitle = "Colombia 2019 · Fuente: DANE – Estadísticas Vitales",
+    caption  = "Solo se etiquetan los 5 departamentos con más defunciones"
+  ) +
+  theme_void(base_size = 11) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 13, hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, color = "grey40"),
+    plot.caption  = element_text(size = 8,  hjust = 0.5, color = "grey50"),
+    legend.position      = "right",
+    legend.title         = element_text(size = 9, face = "bold"),
+    legend.text          = element_text(size = 8),
+    plot.background      = element_rect(fill = "white", color = NA),
+    plot.margin          = margin(10, 10, 10, 10)
+  )
+```
+
+# 7. Conclusiones
+
+```{r, include=FALSE}
+n_final <- nrow(data_limpia)
+pct_natural <- round(100 * mean(data_limpia$Manera_Muerte == "Natural (enfermedad)"), 1)
+pct_homicidio <- round(100 * mean(data_limpia$Manera_Muerte == "Homicidio"), 1)
+med_natural <- median(data_limpia$Edad[data_limpia$Manera_Muerte == "Natural (enfermedad)"])
+med_homicidio <- median(data_limpia$Edad[data_limpia$Manera_Muerte == "Homicidio"])
+med_hombres <- median(data_limpia$Edad[data_limpia$Sexo == "Masculino"])
+med_mujeres <- median(data_limpia$Edad[data_limpia$Sexo == "Femenino"])
+pct_hombres <- round(100 * mean(data_limpia$Sexo == "Masculino"), 1)
+```
+
+1. **Limpieza.** La base tenía `r format(nrow(data), big.mark = ".", decimal.mark = ",")` defunciones. Eliminamos `r sum(duplicated(data))` duplicados y `r nrow(data_sin) - nrow(data_limpia)` filas con edad o manera de muerte desconocida, y quedamos con **`r format(n_final, big.mark = ".", decimal.mark = ",")` defunciones**. Aprendimos que en esta base los datos desconocidos no vienen como `NA` sino como códigos (por ejemplo GRU_ED1 = 29), y que los duplicados hay que buscarlos en todas las columnas porque no hay un ID por defunción.
+
+2. **Edad.** La edad aproximada al fallecer tiene media de `r round(mean(data_limpia$Edad), 1)` años y mediana de `r median(data_limpia$Edad)` años. La mayoría de las defunciones ocurre en edades avanzadas.
+
+3. **Manera de muerte.** El `r pct_natural`% de las defunciones son por enfermedad y el `r pct_homicidio`% son homicidios. La mediana de edad es `r med_natural` años en las muertes por enfermedad y `r med_homicidio` años en los homicidios.
+
+4. **Sexo.** El `r pct_hombres`% de los fallecidos son hombres. La mediana de edad al morir es `r med_hombres` años en hombres y `r med_mujeres` años en mujeres.
+
+5. **Lugar.** El departamento con más defunciones es **`r as.character(top_dptos$Departamento[1])`**, el municipio con más defunciones es **`r as.character(top_mpios$Municipio[1])`** y el municipio con más homicidios es **`r as.character(top_homicidios$Municipio[1])`**. El mapa coroplético evidencia la concentración en los departamentos de mayor densidad poblacional (Bogotá D.C., Antioquia y Valle del Cauca).
+
+6. **Limitaciones.** La edad está agrupada, así que las medidas son aproximadas. Además son conteos y no tasas: las ciudades grandes salen de primeras porque tienen más habitantes. Para mejorar el trabajo se podrían calcular tasas por cada 100.000 habitantes.
+
+Fuente: DANE, Estadísticas Vitales 2019 (<https://microdatos.dane.gov.co/index.php/catalog/696>).
